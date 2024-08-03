@@ -1,39 +1,64 @@
+use crate::db::pizza_data_trait::PizzaDataTrait;
 use actix_web::{
     get, patch, post,
     web::{Data, Json, Path},
-    App, HttpResponse, HttpServer, Responder,
+    App, HttpServer,
 };
 use db::Database;
-use models::{BuyPizzaRequest, UpdatePizzaURL};
+use error::PizzaError;
+use models::pizza::{BuyPizzaRequest, Pizza, UpdatePizzaURL};
+use uuid;
 use validator::Validate;
 mod db;
+mod error;
 mod models;
 
 #[get("/pizzas")]
-async fn get_pizzas(db: Data<Database>) -> impl Responder {
-    let pizzas = db.get_all_pizzas().await;
+async fn get_pizzas(db: Data<Database>) -> Result<Json<Vec<Pizza>>, PizzaError> {
+    let pizzas = Database::get_all_pizzas(&db).await;
     match pizzas {
-        Some(found_pizzas) => HttpResponse::Ok().body(format!("{:?}", found_pizzas)),
-        None => HttpResponse::Ok().body("Error"),
+        Some(found_pizzas) => Ok(Json(found_pizzas)),
+        None => Err(PizzaError::NoPizzasFound),
     }
 }
 
 #[post("/buypizza")]
-async fn buy_pizza(body: Json<BuyPizzaRequest>) -> impl Responder {
+async fn buy_pizza(
+    body: Json<BuyPizzaRequest>,
+    db: Data<Database>,
+) -> Result<Json<Pizza>, PizzaError> {
     let is_valid = body.validate();
+
     match is_valid {
         Ok(_) => {
             let pizza_name = body.pizza_name.clone();
-            HttpResponse::Ok().body(format!("pizza entered is {pizza_name}"))
+
+            let mut buffer = uuid::Uuid::encode_buffer();
+            let new_uuid = uuid::Uuid::new_v4().simple().encode_lower(&mut buffer);
+
+            let new_pizza =
+                Database::add_pizza(&db, Pizza::new(String::from(new_uuid), pizza_name)).await;
+            match new_pizza {
+                Some(created) => Ok(Json(created)),
+                None => Err(PizzaError::PizzaCreationFailure),
+            }
         }
-        Err(_) => HttpResponse::Ok().body("pizza name is required"),
+        Err(_) => Err(PizzaError::PizzaCreationFailure),
     }
 }
 
 #[patch("/updatepizza/{uuid}")]
-async fn update_pizza(update_pizza_url: Path<UpdatePizzaURL>) -> impl Responder {
+async fn update_pizza(
+    update_pizza_url: Path<UpdatePizzaURL>,
+    db: Data<Database>,
+) -> Result<Json<Pizza>, PizzaError> {
     let uuid = update_pizza_url.into_inner().uuid;
-    HttpResponse::Ok().body(format!("updating a pizza with {uuid}"))
+    let update_result = Database::update_pizza(&db, uuid).await;
+
+    match update_result {
+        Some(updated_pizza) => Ok(Json(updated_pizza)),
+        None => Err(PizzaError::NoSuchPizzaFound),
+    }
 }
 
 #[actix_web::main]
